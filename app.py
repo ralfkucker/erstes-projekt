@@ -3,43 +3,59 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+
 from sklearn.linear_model import LogisticRegression
-from scipy.stats import norm
 
 st.set_page_config(layout="wide")
-st.title("🚀 AI Trading Terminal – FUND DASHBOARD PRO (FINAL)")
 
-# =========================
-# SETTINGS
-# =========================
-st.sidebar.header("⚙️ Settings")
+st.title("📈 Multi-Asset Trading Engine PRO")
 
-tickers = st.sidebar.text_input("Watchlist", "SPY,QQQ,GLD,TLT").split(",")
-capital = st.sidebar.number_input("Kapital (€)", value=100000)
+# ==============================
+# INPUT
+# ==============================
 
-st.sidebar.subheader("🎛️ Factor Weights")
+tickers_input = st.text_input("Assets (Komma getrennt)", "SPY, QQQ, BTC-USD")
+capital = st.number_input("Kapital ($)", value=10000)
+context_score = st.slider("Context Score (Makro)", 0.0, 1.0, 0.5)
 
-w_trend = st.sidebar.slider("Trend", 0, 100, 20)
-w_mom = st.sidebar.slider("Momentum", 0, 100, 15)
-w_vol = st.sidebar.slider("Volatility", 0, 100, 15)
-w_macro = st.sidebar.slider("Macro", 0, 100, 15)
-w_corr = st.sidebar.slider("Correlation", 0, 100, 10)
-w_flow = st.sidebar.slider("Flow", 0, 100, 15)
+tickers = [t.strip() for t in tickers_input.split(",")]
 
-weights = np.array([w_trend, w_mom, w_vol, w_macro, w_corr, w_flow])
-weights = weights / weights.sum()
+# ==============================
+# CACHE LAYER
+# ==============================
 
-# =========================
-# DATA
-# =========================
+@st.cache_data(ttl=3600)
 def load_data(ticker):
-    df = yf.download(ticker, period="1y")
-    return df.dropna()
+    try:
+        df = yf.download(ticker, period="1y", interval="1d", auto_adjust=True, progress=False)
 
-# =========================
-# FEATURE ENGINEERING
-# =========================
+        if df is None or df.empty:
+            return None
+
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+
+        df = df[["Open","High","Low","Close","Volume"]].copy()
+
+        df = df.replace([np.inf, -np.inf], np.nan).dropna()
+
+        if len(df) < 100:
+            return None
+
+        return df
+
+    except:
+        return None
+
+
+@st.cache_data(ttl=3600)
 def create_features(df):
+
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
+    df = df.copy()
+
     df["returns"] = df["Close"].pct_change()
     df["ma50"] = df["Close"].rolling(50).mean()
     df["ma200"] = df["Close"].rolling(200).mean()
@@ -48,155 +64,148 @@ def create_features(df):
     df["trend"] = df["Close"] - df["ma50"]
     df["momentum"] = df["returns"].rolling(10).mean()
 
-    df = df.dropna()
+    df = df.replace([np.inf, -np.inf], np.nan).dropna()
+
+    if len(df) < 50:
+        return None, None, None
 
     X = df[["trend", "momentum", "vol"]]
     y = (df["returns"].shift(-1) > 0).astype(int)
 
     return X[:-1], y[:-1], df
 
-# =========================
-# ML MODEL
-# =========================
-def train_ml(X, y):
+
+@st.cache_resource
+def train_model(X, y):
     model = LogisticRegression()
     model.fit(X, y)
     return model
 
-# =========================
-# SCORE
-# =========================
-def calc_score(df):
-    trend = 1 if df["Close"].iloc[-1] > df["ma50"].iloc[-1] else -1
-    mom = 1 if df["momentum"].iloc[-1] > 0 else -1
-    vol = -1 if df["vol"].iloc[-1] > df["vol"].mean() else 1
 
-    macro = 0
-    corr = 0
-    flow = 0
+@st.cache_data
+def monte_carlo(returns, sims=500):
 
-    factors = np.array([trend, mom, vol, macro, corr, flow])
-    return np.dot(weights, factors) * 100
-
-# =========================
-# BACKTEST
-# =========================
-def backtest(df):
-    cash = 10000
-    position = 0
-    equity = []
-
-    for i in range(50, len(df)-1):
-        price = df["Close"].iloc[i]
-
-        if df["momentum"].iloc[i] > 0:
-            position = cash / price
-            cash = 0
-        else:
-            cash = position * price
-            position = 0
-
-        equity.append(cash + position * price)
-
-    return equity
-
-# =========================
-# MONTE CARLO
-# =========================
-def monte_carlo(returns, sims=200):
+    last_price = 100
     results = []
 
     for _ in range(sims):
-        sim = np.random.choice(returns, size=len(returns))
-        path = np.cumprod(1 + sim)
-        results.append(path[-1])
+        price = last_price
+        for r in returns[-100:]:
+            price *= (1 + np.random.normal(r, returns.std()))
+        results.append(price)
 
-    return np.percentile(results, [5,50,95])
+    return np.percentile(results, [5, 50, 95])
 
-# =========================
-# MAIN
-# =========================
+
+# ==============================
+# ENGINE
+# ==============================
+
 results = []
 
 for t in tickers:
-    data = load_data(t.strip())
-    if data.empty:
+
+    data = load_data(t)
+
+    if data is None:
+        st.warning(f"{t}: keine Daten")
         continue
 
     X, y, df = create_features(data)
-    model = train_ml(X, y)
 
-    latest = X.iloc[-1].values.reshape(1,-1)
+    if X is None:
+        st.warning(f"{t}: zu wenig Daten")
+        continue
+
+    model = train_model(X, y)
+
+    latest = X.iloc[-1:]
     prob = model.predict_proba(latest)[0][1]
 
-    score = calc_score(df)
+    vol = df["vol"].iloc[-1] * np.sqrt(252) * 100
 
-    final_score = 0.7 * score + 0.3 * (prob * 100)
+    returns = df["returns"].dropna()
 
-    equity = backtest(df)
+    mc_low, mc_mid, mc_high = monte_carlo(returns)
 
-    mc = monte_carlo(df["returns"].dropna())
+    signal = "NEUTRAL"
+
+    if prob > 0.55 and context_score > 0.5:
+        signal = "LONG"
+    elif prob < 0.45 and context_score < 0.5:
+        signal = "SHORT"
 
     results.append({
-        "Ticker": t,
-        "Score": round(final_score,2),
-        "ML Prob ↑": round(prob*100,2),
-        "MonteCarlo Worst": round(mc[0],2),
-        "MonteCarlo Median": round(mc[1],2),
-        "MonteCarlo Best": round(mc[2],2)
+        "Asset": t,
+        "Signal": signal,
+        "ML Score": round(prob, 2),
+        "Vol (%)": round(vol, 2),
+        "MC Low": round(mc_low, 2),
+        "MC Mid": round(mc_mid, 2),
+        "MC High": round(mc_high, 2),
+        "Data": df
     })
 
-df_res = pd.DataFrame(results)
 
-# =========================
-# DASHBOARD
-# =========================
-st.subheader("📊 Signal Board")
-st.dataframe(df_res)
+# ==============================
+# OUTPUT TABLE
+# ==============================
 
-# =========================
-# CHART
-# =========================
-ticker = st.selectbox("Chart", df_res["Ticker"])
+if len(results) > 0:
 
-data = load_data(ticker)
+    df_results = pd.DataFrame(results)
 
-fig = go.Figure()
-fig.add_trace(go.Scatter(x=data.index, y=data["Close"], name="Price"))
-st.plotly_chart(fig, use_container_width=True)
+    st.dataframe(df_results.drop(columns=["Data"]))
 
-# =========================
-# BACKTEST CHART
-# =========================
-st.subheader("📈 Backtest")
+    # ==============================
+    # CHARTS
+    # ==============================
 
-X, y, df = create_features(data)
-equity = backtest(df)
+    for r in results:
 
-fig2 = go.Figure()
-fig2.add_trace(go.Scatter(y=equity, name="Equity"))
-st.plotly_chart(fig2, use_container_width=True)
+        st.subheader(r["Asset"])
 
-# =========================
-# OPTIONS ENGINE
-# =========================
-st.subheader("📊 Options Engine")
+        df = r["Data"]
 
-S = data["Close"].iloc[-1]
-K = st.number_input("Strike", value=float(round(S)))
-T = st.slider("Years", 0.1, 2.0, 0.5)
-r = 0.02
-sigma = 0.2
+        fig = go.Figure()
 
-def bs_call(S,K,T,r,sigma):
-    d1=(np.log(S/K)+(r+sigma**2/2)*T)/(sigma*np.sqrt(T))
-    d2=d1-sigma*np.sqrt(T)
-    return S*norm.cdf(d1)-K*np.exp(-r*T)*norm.cdf(d2)
+        fig.add_trace(go.Candlestick(
+            x=df.index,
+            open=df["Open"],
+            high=df["High"],
+            low=df["Low"],
+            close=df["Close"]
+        ))
 
-def bs_put(S,K,T,r,sigma):
-    d1=(np.log(S/K)+(r+sigma**2/2)*T)/(sigma*np.sqrt(T))
-    d2=d1-sigma*np.sqrt(T)
-    return K*np.exp(-r*T)*norm.cdf(-d2)-S*norm.cdf(-d1)
+        fig.add_trace(go.Scatter(
+            x=df.index,
+            y=df["Close"].rolling(50).mean(),
+            name="MA50"
+        ))
 
-st.write("Call:", round(bs_call(S,K,T,r,sigma),2))
-st.write("Put:", round(bs_put(S,K,T,r,sigma),2))
+        fig.add_trace(go.Scatter(
+            x=df.index,
+            y=df["Close"].rolling(200).mean(),
+            name="MA200"
+        ))
+
+        fig.update_layout(
+            height=400,
+            yaxis=dict(
+                range=[
+                    df["Low"].min()*0.95,
+                    df["High"].max()*1.05
+                ]
+            )
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+# ==============================
+# CACHE RESET
+# ==============================
+
+if st.sidebar.button("🔄 Cache leeren"):
+    st.cache_data.clear()
+    st.cache_resource.clear()
+    st.success("Cache gelöscht")
