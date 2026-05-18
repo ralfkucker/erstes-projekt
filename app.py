@@ -19,91 +19,81 @@ ticker = st.sidebar.text_input("Ticker", "AAPL")
 period = st.sidebar.selectbox("Zeitraum", ["6mo", "1y", "2y"])
 
 # ======================
-# DATA
+# DATA LOAD (SAFE)
 # ======================
-data = yf.download(ticker, period=period)
+@st.cache_data
+def load_data(ticker, period):
+    try:
+        data = yf.download(ticker, period=period)
+        return data
+    except:
+        return pd.DataFrame()
 
-# Fehler abfangen, falls keine Daten
-if data is None or data.empty:
+data = load_data(ticker, period)
+
+# ======================
+# CHECK DATA
+# ======================
+if data.empty:
     st.error("Keine Daten gefunden. Bitte anderen Ticker eingeben.")
     st.stop()
 
 # ======================
-# AI MARKET PHASE
+# CHART
 # ======================
-returns = data["Close"].pct_change()
-volatility = returns.rolling(20).std()
+st.subheader("📈 Preisverlauf")
+st.line_chart(data["Close"])
 
-# sichere Werte (keine NaNs!)
-current_vol = volatility.dropna().iloc[-1]
-avg_vol = volatility.dropna().mean()
+# ======================
+# INDICATORS
+# ======================
+data["Returns"] = data["Close"].pct_change()
+
+# Volatility (rolling)
+volatility = data["Returns"].rolling(20).std()
+
+# CLEAN values
+volatility = volatility.dropna()
+
+if len(volatility) == 0:
+    st.warning("Nicht genug Daten für Volatilität.")
+    st.stop()
+
+current_vol = float(volatility.iloc[-1])
+avg_vol = float(volatility.mean())
+
+# ======================
+# AI MARKET STATE
+# ======================
+st.subheader("🧠 Market Regime")
 
 if current_vol > avg_vol:
-    regime = "🔴 Risk Off"
+    regime = "⚠️ Risk Off"
 else:
-    regime = "🟢 Risk On"
+    regime = "✅ Risk On"
+
+st.write("Aktuelle Volatilität:", round(current_vol, 4))
+st.write("Durchschnitt:", round(avg_vol, 4))
+st.write("Marktphase:", regime)
 
 # ======================
 # SIGNAL ENGINE
 # ======================
-ma_short = data["Close"].rolling(20).mean()
-ma_long = data["Close"].rolling(50).mean()
+st.subheader("📊 Signal")
 
-ma_short_last = ma_short.dropna().iloc[-1]
-ma_long_last = ma_long.dropna().iloc[-1]
-
-if ma_short_last > ma_long_last:
-    signal = "🟢 BUY"
-    confidence = round((ma_short_last / ma_long_last - 1) * 100, 2)
+if regime == "⚠️ Risk Off":
+    st.error("➡️ Defensive Strategien empfohlen")
+    st.write("- Long Puts")
+    st.write("- Short Calls")
+    st.write("- Hedging")
 else:
-    signal = "🔴 SELL"
-    confidence = round((ma_long_last / ma_short_last - 1) * 100, 2)
-
-# ======================
-# LAYOUT
-# ======================
-col1, col2, col3 = st.columns(3)
-
-col1.metric("Market Phase", regime)
-col2.metric("Signal", signal)
-col3.metric("Confidence %", confidence)
-
-# ======================
-# CHARTS
-# ======================
-st.subheader("Price Chart")
-st.line_chart(data["Close"])
-
-st.subheader("Volatility")
-st.line_chart(volatility)
-
-# ======================
-# OPTIONS ENGINE (BASIC)
-# ======================
-st.subheader("Options Strategy Engine")
-
-if regime == "🟢 Risk On":
-    strategy = "Bullish: Short Put / Bull Call Spread"
-elif regime == "🔴 Risk Off":
-    strategy = "Neutral/Defensive: Iron Condor / Short Call"
-else:
-    strategy = "Neutral: Strangle"
-
-st.write("Empfohlene Strategie:", strategy)
-
-# ======================
-# ADVANCED STRATEGIES
-# ======================
-st.subheader("Advanced Strategies")
-
-st.write("✔ Iron Condor")
-st.write("✔ Long Strangle")
-st.write("✔ Short Strangle")
-st.write("✔ Risk Reversal")
-st.write("✔ Collar")
+    st.success("➡️ Risk-On Strategien")
+    st.write("- Long Calls")
+    st.write("- Short Puts")
+    st.write("- Trend Following")
 
 # ======================
 # DATA TABLE
 # ======================
-st.subheader("Latest Data")
-st.dataframe(data.tail())
+with st.expander("📋 Rohdaten anzeigen"):
+    st.dataframe(data.tail(50))
