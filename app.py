@@ -29,7 +29,10 @@ data = yf.download(ticker, period=period)
 returns = data["Close"].pct_change()
 volatility = returns.rolling(20).std()
 
-if volatility.iloc[-1] > volatility.mean():
+current_vol = float(volatility.iloc[-1])
+avg_vol = float(volatility.mean())
+
+if current_vol > avg_vol:
     regime = "🔴 Risk Off"
 else:
     regime = "🟢 Risk On"
