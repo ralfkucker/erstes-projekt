@@ -2,116 +2,159 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import plotly.graph_objects as go
+from scipy.stats import norm
 
 st.set_page_config(layout="wide")
 
-# ======================
-# HEADER
-# ======================
 st.title("🚀 AI Trading Terminal PRO")
 
-# ======================
-# SIDEBAR
-# ======================
-st.sidebar.header("Settings")
+# =========================
+# DATA
+# =========================
+ticker = st.sidebar.text_input("Ticker", "SPY")
+data = yf.download(ticker, period="6mo")
 
-ticker = st.sidebar.text_input("Ticker", "AAPL")
-period = st.sidebar.selectbox("Zeitraum", ["3mo", "6mo", "1y", "2y"])
-
-# ======================
-# DATA LOAD (SAFE)
-# ======================
-@st.cache_data
-def load_data(ticker, period):
-    try:
-        data = yf.download(ticker, period=period)
-        return data
-    except:
-        return pd.DataFrame()
-
-data = load_data(ticker, period)
-
-if data is None or data.empty or len(data) < 30:
-    st.error("Nicht genug Daten verfügbar.")
+if data.empty:
+    st.error("Keine Daten geladen")
     st.stop()
 
-# sauber runden
+# =========================
+# CLEAN DATA
+# =========================
+data = data.dropna()
+
+# Preise runden
 data = data.round(2)
 
-# ======================
-# VOL ENGINE (ROBUST)
-# ======================
-returns = data["Close"].pct_change()
+# =========================
+# VOLATILITY ENGINE (FIXED)
+# =========================
+returns = np.log(data["Close"] / data["Close"].shift(1))
+returns = returns.dropna()
 
-vol_daily = returns.rolling(20).std()
-vol_annual = vol_daily * np.sqrt(252)
+vol = returns.rolling(20).std()
 
-vol_clean = vol_annual.dropna()
-
-if len(vol_clean) == 0:
-    st.warning("Volatilität kann nicht berechnet werden.")
-    st.stop()
-
-current_vol = float(vol_clean.iloc[-1])
-avg_vol = float(vol_clean.mean())
-
-current_vol_pct = current_vol * 100
-avg_vol_pct = avg_vol * 100
-
-# ======================
-# MARKET REGIME
-# ======================
-if current_vol > avg_vol:
-    regime = "🔴 Risk Off"
+# ABSICHERUNG gegen leere Series
+if len(vol.dropna()) == 0:
+    current_vol = 0
+    avg_vol = 0
 else:
-    regime = "🟢 Risk On"
+    vol_clean = vol.dropna()
+    current_vol = float(vol_clean.iloc[-1])
+    avg_vol = float(vol_clean.mean())
 
-# ======================
-# OPTIONS ENGINE
-# ======================
-def get_strategy(regime, vol):
-    if regime == "🟢 Risk On" and vol < 20:
-        return "📈 Trend: Long Calls / Short Puts"
-    elif regime == "🟢 Risk On" and vol >= 20:
-        return "⚖️ Mixed: Call Spreads"
-    elif regime == "🔴 Risk Off" and vol < 20:
-        return "🛡️ Defensive: Protective Puts"
-    else:
-        return "💰 Income: Iron Condor / Short Strangle"
+# Annualisieren + in %
+current_vol_annual = current_vol * np.sqrt(252) * 100
+avg_vol_annual = avg_vol * np.sqrt(252) * 100
 
-strategy = get_strategy(regime, current_vol_pct)
+# =========================
+# MARKET REGIME
+# =========================
+regime = "Risk On" if current_vol < avg_vol else "Risk Off"
 
-# ======================
-# LAYOUT
-# ======================
-col1, col2 = st.columns([2, 1])
+st.subheader("🧠 Market Regime")
 
-# ===== CHART FIXED
-with col1:
-    st.subheader("📊 Price Chart")
+col1, col2, col3 = st.columns(3)
 
-    # Auto Scaling Chart
-    st.line_chart(data["Close"], use_container_width=True)
+col1.metric("Aktuelle Volatilität", f"{current_vol_annual:.2f}%")
+col2.metric("Durchschnitt", f"{avg_vol_annual:.2f}%")
+col3.metric("Phase", regime)
 
-# ===== RIGHT PANEL
-with col2:
-    st.subheader("🧠 Market Regime")
+# =========================
+# CHART (FIXED SCALE)
+# =========================
+st.subheader("📈 Chart")
 
-    st.write(f"Aktuelle Volatilität: **{current_vol_pct:.2f}%**")
-    st.write(f"Durchschnitt: **{avg_vol_pct:.2f}%**")
-    st.write(f"Marktphase: {regime}")
+fig = go.Figure()
 
-    st.subheader("📊 Options Engine")
-    st.info(strategy)
+fig.add_trace(go.Candlestick(
+    x=data.index,
+    open=data['Open'],
+    high=data['High'],
+    low=data['Low'],
+    close=data['Close']
+))
 
-# ======================
-# EXTRA: VOL CHART
-# ======================
-st.subheader("📉 Volatility (Annualized)")
-st.line_chart(vol_annual.dropna(), use_container_width=True)
+# Auto-scale fix (kein 0 mehr)
+min_price = data["Low"].min()
+max_price = data["High"].max()
 
-# ======================
-# DATA TABLE
-# ======================
+fig.update_layout(
+    yaxis=dict(range=[min_price * 0.98, max_price * 1.02]),
+    height=500
+)
+
+st.plotly_chart(fig, use_container_width=True)
+
+# =========================
+# SIGNAL ENGINE
+# =========================
+st.subheader("📊 Signal")
+
+if regime == "Risk On":
+    st.success("➡️ Risk-On Strategien")
+    st.write("- Long Calls")
+    st.write("- Trend Following")
+    st.write("- Momentum")
+else:
+    st.error("➡️ Risk-Off Strategien")
+    st.write("- Long Puts")
+    st.write("- Hedging")
+    st.write("- Cash / Defensive")
+
+# =========================
+# OPTIONS ENGINE (LEVEL 3)
+# =========================
+st.subheader("🧮 Options Engine")
+
+S = float(data["Close"].iloc[-1])  # aktueller Preis
+K = st.number_input("Strike", value=round(S, 0))
+T = st.slider("Laufzeit (Jahre)", 0.01, 2.0, 0.5)
+r = 0.01
+sigma = current_vol * np.sqrt(252)
+
+def black_scholes_call(S, K, T, r, sigma):
+    if sigma == 0 or T == 0:
+        return 0
+    d1 = (np.log(S / K) + (r + 0.5 * sigma**2)*T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+    return S * norm.cdf(d1) - K * np.exp(-r*T) * norm.cdf(d2)
+
+def black_scholes_put(S, K, T, r, sigma):
+    if sigma == 0 or T == 0:
+        return 0
+    d1 = (np.log(S / K) + (r + 0.5 * sigma**2)*T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+    return K * np.exp(-r*T) * norm.cdf(-d2) - S * norm.cdf(-d1)
+
+call_price = black_scholes_call(S, K, T, r, sigma)
+put_price = black_scholes_put(S, K, T, r, sigma)
+
+col1, col2 = st.columns(2)
+col1.metric("Call Preis", f"{call_price:.2f}")
+col2.metric("Put Preis", f"{put_price:.2f}")
+
+# =========================
+# LEVEL 4 – AI SIGNAL SCORE
+# =========================
+st.subheader("🤖 AI Score")
+
+momentum = data["Close"].pct_change(20).iloc[-1]
+vol_score = 1 if current_vol < avg_vol else -1
+trend_score = 1 if data["Close"].iloc[-1] > data["Close"].rolling(50).mean().iloc[-1] else -1
+
+score = momentum * 5 + vol_score * 2 + trend_score * 3
+
+if score > 3:
+    st.success(f"BULLISH ({score:.2f})")
+elif score < -3:
+    st.error(f"BEARISH ({score:.2f})")
+else:
+    st.warning(f"NEUTRAL ({score:.2f})")
+
+# =========================
+# RAW DATA
+# =========================
 with st.expander("📋 Rohdaten anzeigen"):
     st.dataframe(data.tail())
