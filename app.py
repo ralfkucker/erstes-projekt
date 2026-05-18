@@ -1,32 +1,16 @@
 import streamlit as st
-import pandas as pd
-import numpy as np
 import yfinance as yf
+import pandas as pd
 
-st.set_page_config(page_title="AI Fund Dashboard", layout="wide")
+st.set_page_config(layout="wide")
 
-st.title("🚀 AI Fund Dashboard PRO")
+st.title("🚀 AI Trading Dashboard")
 
-ticker = st.text_input("Asset (z.B. AAPL, TSLA, SPY)", "AAPL")
+ticker = st.text_input("Ticker eingeben (z.B. AAPL, TSLA, BTC-USD)", "AAPL")
 
-data = yf.download(ticker, period="3mo", interval="1d")
+data = yf.download(ticker, period="1y")
 
-if not data.empty:
-    st.line_chart(data["Close"])
+st.line_chart(data["Close"])
 
-    returns = data["Close"].pct_change().dropna()
-    vol = returns.std() * np.sqrt(252)
-
-    st.metric("Volatility (annualized)", f"{vol:.2%}")
-
-    if vol > 0.4:
-        regime = "🔥 High Vol / Risk"
-    elif vol > 0.2:
-        regime = "⚖️ Neutral"
-    else:
-        regime = "🟢 Low Risk"
-
-    st.subheader(f"Market Regime: {regime}")
-
-else:
-    st.error("Keine Daten gefunden")
+st.write("Letzte Daten:")
+st.dataframe(data.tail())
