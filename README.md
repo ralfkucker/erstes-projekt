@@ -1,2 +1,4 @@
-# erstes-projekt
-Mein erstes GitHub-Projekt
+# AI Fund Dashboard
+
+Start:
+streamlit run app.py
