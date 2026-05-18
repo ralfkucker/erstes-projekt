@@ -10,25 +10,36 @@ import yfinance as yf
 ASSETS = ["AAPL", "MSFT", "TSLA", "SPY", "BTC-USD"]
 
 # ==============================
-# DATA LAYER
+# DATA LAYER (FIXED)
 # ==============================
 
 @st.cache_data
 def load_data(symbol):
+
     df = yf.download(symbol, period="2y", interval="1d")
 
     if df is None or df.empty:
         return None
+
+    # 🔥 FIX: MultiIndex flatten
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
 
     df = df.dropna()
 
     return df
 
 # ==============================
-# FEATURE ENGINEERING
+# FEATURE ENGINEERING (ROBUST)
 # ==============================
 
 def create_features(df):
+
+    df = df.copy()
+
+    # 🔥 Safety Fix für Close
+    if isinstance(df["Close"], pd.DataFrame):
+        df["Close"] = df["Close"].iloc[:, 0]
 
     df["returns"] = df["Close"].pct_change()
 
@@ -79,7 +90,7 @@ def simulate_trade(df, entry_idx, rr=2, sl=0.01):
     tp = entry * (1 + rr * sl)
     stop = entry * (1 - sl)
 
-    for i in range(entry_idx+1, len(df)):
+    for i in range(entry_idx + 1, len(df)):
 
         high = df["High"].iloc[i]
         low = df["Low"].iloc[i]
@@ -100,7 +111,7 @@ def backtest(df):
 
     results = []
 
-    for i in range(200, len(df)-10):
+    for i in range(200, len(df) - 10):
 
         sub_df = df.iloc[:i]
 
@@ -149,7 +160,10 @@ def walk_forward(df):
 
     for i in range(2, 5):
 
-        test = df[i*chunk:(i+1)*chunk]
+        test = df[i * chunk:(i + 1) * chunk]
+
+        if len(test) < 250:
+            continue
 
         results = backtest(test)
 
@@ -160,7 +174,7 @@ def walk_forward(df):
     return scores
 
 # ==============================
-# AI HEDGE FUND CORE (SIMPLIFIED)
+# AI FUND CORE
 # ==============================
 
 def run_ai_fund():
@@ -175,6 +189,9 @@ def run_ai_fund():
             continue
 
         df = create_features(df)
+
+        if len(df) < 300:
+            continue
 
         results = backtest(df)
 
@@ -199,19 +216,24 @@ st.title("🤖 AI Hedge Fund – Test Mode")
 
 if st.button("Run Full System Test"):
 
-    results = run_ai_fund()
+    with st.spinner("Running AI Fund Analysis..."):
 
-    for r in results:
+        results = run_ai_fund()
 
-        st.subheader(r["asset"])
+    if not results:
+        st.error("Keine Daten oder zu wenig Historie.")
+    else:
+        for r in results:
 
-        st.write("Winrate:", r["stats"]["winrate"])
-        st.write("Expected Value:", r["stats"]["ev"])
-        st.write("Trades:", r["stats"]["trades"])
+            st.subheader(r["asset"])
 
-        st.write("Walk Forward:")
+            st.write("Winrate:", r["stats"]["winrate"])
+            st.write("Expected Value:", r["stats"]["ev"])
+            st.write("Trades:", r["stats"]["trades"])
 
-        for wf in r["wf"]:
-            st.write(wf)
+            st.write("Walk Forward:")
 
-        st.markdown("---")
+            for wf in r["wf"]:
+                st.write(wf)
+
+            st.markdown("---")
