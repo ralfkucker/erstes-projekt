@@ -3,237 +3,245 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 
-# ==============================
-# CONFIG
-# ==============================
-
-ASSETS = ["AAPL", "MSFT", "TSLA", "SPY", "BTC-USD"]
+st.set_page_config(layout="wide")
 
 # ==============================
-# DATA LAYER (FIXED)
+# ASSET UNIVERSE
+# ==============================
+
+ASSETS = [
+    "AAPL","MSFT","NVDA","AMZN","GOOGL",
+    "META","TSLA","NFLX",
+    "SPY","QQQ",
+    "GLD","SLV","USO",
+    "EURUSD=X","GBPUSD=X",
+    "BTC-USD","ETH-USD"
+]
+
+# ==============================
+# DATA
 # ==============================
 
 @st.cache_data
 def load_data(symbol):
-
     df = yf.download(symbol, period="2y", interval="1d")
 
     if df is None or df.empty:
         return None
 
-    # 🔥 FIX: MultiIndex flatten
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
-    df = df.dropna()
-
-    return df
+    return df.dropna()
 
 # ==============================
-# FEATURE ENGINEERING (ROBUST)
+# FEATURES
 # ==============================
 
 def create_features(df):
 
     df = df.copy()
 
-    # 🔥 Safety Fix für Close
     if isinstance(df["Close"], pd.DataFrame):
         df["Close"] = df["Close"].iloc[:, 0]
 
     df["returns"] = df["Close"].pct_change()
-
     df["ma50"] = df["Close"].rolling(50).mean()
-    df["ma200"] = df["Close"].rolling(200).mean()
-
     df["momentum"] = df["Close"] - df["Close"].shift(10)
-
     df["volatility"] = df["returns"].rolling(20).std()
-
     df["trend"] = df["Close"] - df["ma50"]
 
-    df["target"] = (df["Close"].shift(-1) > df["Close"]).astype(int)
-
-    df = df.dropna()
-
-    return df
+    return df.dropna()
 
 # ==============================
-# SIGNAL AI
+# SIGNAL SCORE
 # ==============================
 
-def generate_signal(df):
+def generate_score(df):
 
     row = df.iloc[-1]
-
     score = 0
 
     if row["momentum"] > 0:
         score += 1
-
     if row["trend"] > 0:
         score += 1
-
     if row["volatility"] < df["volatility"].mean():
         score += 1
 
-    return score >= 2
+    return score
 
 # ==============================
-# TRADE SIMULATION
+# SCANNER
 # ==============================
 
-def simulate_trade(df, entry_idx, rr=2, sl=0.01):
+def scan_markets():
 
-    entry = df["Close"].iloc[entry_idx]
+    results = []
 
-    tp = entry * (1 + rr * sl)
-    stop = entry * (1 - sl)
+    for asset in ASSETS:
 
-    for i in range(entry_idx + 1, len(df)):
+        df = load_data(asset)
+        if df is None:
+            continue
 
-        high = df["High"].iloc[i]
-        low = df["Low"].iloc[i]
+        df = create_features(df)
+        if len(df) < 200:
+            continue
 
-        if low <= stop:
-            return -1
+        score = generate_score(df)
 
-        if high >= tp:
-            return rr
+        results.append({
+            "Asset": asset,
+            "Score": score,
+            "Price": round(df["Close"].iloc[-1], 2)
+        })
 
-    return 0
+    return pd.DataFrame(results)
 
 # ==============================
 # BACKTEST
 # ==============================
 
+def simulate_trade(df, i, rr=2, sl=0.01):
+
+    entry = df["Close"].iloc[i]
+    tp = entry * (1 + rr * sl)
+    stop = entry * (1 - sl)
+
+    for j in range(i+1, len(df)):
+        if df["Low"].iloc[j] <= stop:
+            return -1
+        if df["High"].iloc[j] >= tp:
+            return rr
+
+    return 0
+
+
 def backtest(df):
 
     results = []
 
-    for i in range(200, len(df) - 10):
+    for i in range(200, len(df)-10):
 
-        sub_df = df.iloc[:i]
+        sub = df.iloc[:i]
 
-        if generate_signal(sub_df):
-
-            result = simulate_trade(df, i)
-
-            results.append(result)
+        if generate_score(sub) >= 2:
+            results.append(simulate_trade(df, i))
 
     return results
 
-# ==============================
-# METRICS
-# ==============================
 
 def evaluate(results):
 
-    if len(results) == 0:
-        return {"winrate": 0, "ev": 0, "trades": 0}
+    if not results:
+        return {"Winrate":0,"EV":0,"Trades":0}
 
     wins = [r for r in results if r > 0]
     losses = [r for r in results if r < 0]
 
-    winrate = len(wins) / len(results)
-
-    avg_win = np.mean(wins) if wins else 0
-    avg_loss = abs(np.mean(losses)) if losses else 0
-
-    ev = winrate * avg_win - (1 - winrate) * avg_loss
+    winrate = len(wins)/len(results)
+    ev = winrate*np.mean(wins) - (1-winrate)*abs(np.mean(losses))
 
     return {
-        "winrate": round(winrate, 2),
-        "ev": round(ev, 2),
-        "trades": len(results)
+        "Winrate": round(winrate,2),
+        "EV": round(ev,2),
+        "Trades": len(results)
     }
-
-# ==============================
-# WALK FORWARD
-# ==============================
-
-def walk_forward(df):
-
-    chunk = int(len(df) / 5)
-
-    scores = []
-
-    for i in range(2, 5):
-
-        test = df[i * chunk:(i + 1) * chunk]
-
-        if len(test) < 250:
-            continue
-
-        results = backtest(test)
-
-        stats = evaluate(results)
-
-        scores.append(stats)
-
-    return scores
-
-# ==============================
-# AI FUND CORE
-# ==============================
-
-def run_ai_fund():
-
-    all_results = []
-
-    for asset in ASSETS:
-
-        df = load_data(asset)
-
-        if df is None:
-            continue
-
-        df = create_features(df)
-
-        if len(df) < 300:
-            continue
-
-        results = backtest(df)
-
-        stats = evaluate(results)
-
-        wf = walk_forward(df)
-
-        all_results.append({
-            "asset": asset,
-            "stats": stats,
-            "wf": wf
-        })
-
-    return all_results
 
 # ==============================
 # UI
 # ==============================
 
-st.set_page_config(layout="wide")
-st.title("🤖 AI Hedge Fund – Test Mode")
+st.title("🤖 AI Hedge Fund – PRO SCANNER")
 
-if st.button("Run Full System Test"):
+tab1, tab2, tab3, tab4 = st.tabs([
+    "📊 Backtest",
+    "🔎 Scanner",
+    "🏆 Top Trades",
+    "💼 Portfolio"
+])
 
-    with st.spinner("Running AI Fund Analysis..."):
+# ==============================
+# TAB 1 BACKTEST
+# ==============================
 
-        results = run_ai_fund()
+with tab1:
 
-    if not results:
-        st.error("Keine Daten oder zu wenig Historie.")
-    else:
-        for r in results:
+    if st.button("Run Backtest"):
 
-            st.subheader(r["asset"])
+        data = []
 
-            st.write("Winrate:", r["stats"]["winrate"])
-            st.write("Expected Value:", r["stats"]["ev"])
-            st.write("Trades:", r["stats"]["trades"])
+        for asset in ASSETS:
+            df = load_data(asset)
+            if df is None:
+                continue
 
-            st.write("Walk Forward:")
+            df = create_features(df)
+            if len(df) < 300:
+                continue
 
-            for wf in r["wf"]:
-                st.write(wf)
+            stats = evaluate(backtest(df))
 
+            stats["Asset"] = asset
+            data.append(stats)
+
+        st.dataframe(pd.DataFrame(data))
+
+
+# ==============================
+# TAB 2 SCANNER
+# ==============================
+
+with tab2:
+
+    if st.button("Scan Markets"):
+
+        df = scan_markets()
+        st.dataframe(df.sort_values("Score", ascending=False))
+
+
+# ==============================
+# TAB 3 TOP TRADES
+# ==============================
+
+with tab3:
+
+    if st.button("Get Top Trades"):
+
+        df = scan_markets()
+
+        top = df.sort_values("Score", ascending=False).head(5)
+
+        for _, row in top.iterrows():
+            st.subheader(row["Asset"])
+            st.write("Score:", row["Score"])
+            st.write("Price:", row["Price"])
             st.markdown("---")
+
+
+# ==============================
+# TAB 4 PORTFOLIO
+# ==============================
+
+with tab4:
+
+    if st.button("Build Portfolio"):
+
+        df = scan_markets()
+
+        top = df.sort_values("Score", ascending=False).head(5)
+
+        capital = 10000
+        allocation = capital / len(top)
+
+        portfolio = []
+
+        for _, row in top.iterrows():
+            portfolio.append({
+                "Asset": row["Asset"],
+                "Allocation ($)": round(allocation,2),
+                "Score": row["Score"]
+            })
+
+        st.dataframe(pd.DataFrame(portfolio))
