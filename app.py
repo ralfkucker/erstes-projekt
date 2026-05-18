@@ -16,22 +16,30 @@ st.title("🚀 AI Trading Terminal PRO")
 st.sidebar.header("Settings")
 
 ticker = st.sidebar.text_input("Ticker", "AAPL")
-period = st.sidebar.selectbox("Zeitraum", ["6mo", "1y", "2y"])
+period = st.sidebar.selectbox("Zeitraum", ["3mo", "6mo", "1y", "2y"])
 
 # ======================
-# DATA
+# DATA LOAD (SAFE)
 # ======================
-data = yf.download(ticker, period=period)
+@st.cache_data
+def load_data(ticker, period):
+    try:
+        data = yf.download(ticker, period=period)
+        return data
+    except:
+        return pd.DataFrame()
 
-if data is None or data.empty:
-    st.error("Keine Daten gefunden.")
+data = load_data(ticker, period)
+
+if data is None or data.empty or len(data) < 30:
+    st.error("Nicht genug Daten verfügbar.")
     st.stop()
 
-# Preise sauber runden
+# sauber runden
 data = data.round(2)
 
 # ======================
-# VOL ENGINE (PRO)
+# VOL ENGINE (ROBUST)
 # ======================
 returns = data["Close"].pct_change()
 
@@ -39,6 +47,10 @@ vol_daily = returns.rolling(20).std()
 vol_annual = vol_daily * np.sqrt(252)
 
 vol_clean = vol_annual.dropna()
+
+if len(vol_clean) == 0:
+    st.warning("Volatilität kann nicht berechnet werden.")
+    st.stop()
 
 current_vol = float(vol_clean.iloc[-1])
 avg_vol = float(vol_clean.mean())
@@ -50,53 +62,56 @@ avg_vol_pct = avg_vol * 100
 # MARKET REGIME
 # ======================
 if current_vol > avg_vol:
-    regime = "Risk Off"
+    regime = "🔴 Risk Off"
 else:
-    regime = "Risk On"
+    regime = "🟢 Risk On"
 
 # ======================
 # OPTIONS ENGINE
 # ======================
-st.subheader("🧠 Market Regime")
+def get_strategy(regime, vol):
+    if regime == "🟢 Risk On" and vol < 20:
+        return "📈 Trend: Long Calls / Short Puts"
+    elif regime == "🟢 Risk On" and vol >= 20:
+        return "⚖️ Mixed: Call Spreads"
+    elif regime == "🔴 Risk Off" and vol < 20:
+        return "🛡️ Defensive: Protective Puts"
+    else:
+        return "💰 Income: Iron Condor / Short Strangle"
 
-st.write(f"Aktuelle Volatilität: {current_vol_pct:.2f}%")
-st.write(f"Durchschnitt: {avg_vol_pct:.2f}%")
-st.write(f"Marktphase: {'🟢' if regime=='Risk On' else '🔴'} {regime}")
-
-st.subheader("📊 Options Engine")
-
-if regime == "Risk On":
-    st.success("➡️ Trend-Strategien")
-
-    st.markdown("""
-    - Long Calls  
-    - Short Puts  
-    - Trend Following  
-    """)
-else:
-    st.warning("➡️ Volatilitäts-Strategien")
-
-    st.markdown("""
-    - Iron Condor  
-    - Short Strangle  
-    - Credit Spreads  
-    """)
+strategy = get_strategy(regime, current_vol_pct)
 
 # ======================
-# CHART (FIXED)
+# LAYOUT
 # ======================
-st.subheader("📈 Price Chart")
+col1, col2 = st.columns([2, 1])
 
-chart_data = data["Close"]
+# ===== CHART FIXED
+with col1:
+    st.subheader("📊 Price Chart")
 
-# Auto Scale fix (kein Nullstart)
-y_min = float(chart_data.min()) * 0.95
-y_max = float(chart_data.max()) * 1.05
+    # Auto Scaling Chart
+    st.line_chart(data["Close"], use_container_width=True)
 
-st.line_chart(chart_data)
+# ===== RIGHT PANEL
+with col2:
+    st.subheader("🧠 Market Regime")
+
+    st.write(f"Aktuelle Volatilität: **{current_vol_pct:.2f}%**")
+    st.write(f"Durchschnitt: **{avg_vol_pct:.2f}%**")
+    st.write(f"Marktphase: {regime}")
+
+    st.subheader("📊 Options Engine")
+    st.info(strategy)
+
+# ======================
+# EXTRA: VOL CHART
+# ======================
+st.subheader("📉 Volatility (Annualized)")
+st.line_chart(vol_annual.dropna(), use_container_width=True)
 
 # ======================
 # DATA TABLE
 # ======================
 with st.expander("📋 Rohdaten anzeigen"):
-    st.dataframe(data.tail(50))
+    st.dataframe(data.tail())
