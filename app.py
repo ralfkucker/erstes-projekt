@@ -6,155 +6,166 @@ import plotly.graph_objects as go
 from scipy.stats import norm
 
 st.set_page_config(layout="wide")
-
-st.title("🚀 AI Trading Terminal PRO")
-
-# =========================
-# DATA
-# =========================
-ticker = st.sidebar.text_input("Ticker", "SPY")
-data = yf.download(ticker, period="6mo")
-
-if data.empty:
-    st.error("Keine Daten geladen")
-    st.stop()
+st.title("🚀 AI Trading Terminal PRO – FINAL")
 
 # =========================
-# CLEAN DATA
+# USER INPUT
 # =========================
-data = data.dropna()
+st.sidebar.header("⚙️ Settings")
 
-# Preise runden
-data = data.round(2)
+tickers = st.sidebar.text_input("Watchlist (comma separated)", "SPY,QQQ,DIA,GLD,TLT,VIX").split(",")
 
-# =========================
-# VOLATILITY ENGINE (FIXED)
-# =========================
-returns = np.log(data["Close"] / data["Close"].shift(1))
-returns = returns.dropna()
+capital = st.sidebar.number_input("Kapital (€)", value=100000)
 
-vol = returns.rolling(20).std()
+risk_profile = st.sidebar.selectbox("Risk Profile", ["Konservativ", "Moderat", "Aggressiv"])
 
-# ABSICHERUNG gegen leere Series
-if len(vol.dropna()) == 0:
-    current_vol = 0
-    avg_vol = 0
-else:
-    vol_clean = vol.dropna()
-    current_vol = float(vol_clean.iloc[-1])
-    avg_vol = float(vol_clean.mean())
+st.sidebar.subheader("🎛️ Factor Weights")
 
-# Annualisieren + in %
-current_vol_annual = current_vol * np.sqrt(252) * 100
-avg_vol_annual = avg_vol * np.sqrt(252) * 100
+w_trend = st.sidebar.slider("Trend", 0, 100, 20)
+w_mom = st.sidebar.slider("Momentum", 0, 100, 15)
+w_vol = st.sidebar.slider("Volatility", 0, 100, 15)
+w_macro = st.sidebar.slider("Macro/VIX", 0, 100, 15)
+w_corr = st.sidebar.slider("Correlation", 0, 100, 10)
+w_flow = st.sidebar.slider("Options Flow", 0, 100, 15)
+
+weights = np.array([w_trend, w_mom, w_vol, w_macro, w_corr, w_flow])
+weights = weights / weights.sum()
 
 # =========================
-# MARKET REGIME
+# FUNCTIONS
 # =========================
-regime = "Risk On" if current_vol < avg_vol else "Risk Off"
+def load_data(ticker):
+    data = yf.download(ticker, period="6mo")
+    return data.dropna()
 
-st.subheader("🧠 Market Regime")
+def calc_scores(data):
+    returns = np.log(data["Close"]/data["Close"].shift(1)).dropna()
+    vol = returns.rolling(20).std().dropna()
 
-col1, col2, col3 = st.columns(3)
+    current_vol = vol.iloc[-1] if len(vol)>0 else 0
+    vol_score = -1 if current_vol > vol.mean() else 1
 
-col1.metric("Aktuelle Volatilität", f"{current_vol_annual:.2f}%")
-col2.metric("Durchschnitt", f"{avg_vol_annual:.2f}%")
-col3.metric("Phase", regime)
+    ma50 = data["Close"].rolling(50).mean().iloc[-1]
+    trend_score = 1 if data["Close"].iloc[-1] > ma50 else -1
+
+    momentum = data["Close"].pct_change(20).iloc[-1]
+    mom_score = 1 if momentum > 0 else -1
+
+    macro_score = 0  # placeholder
+    corr_score = 0
+    flow_score = 0
+
+    factors = np.array([trend_score, mom_score, vol_score, macro_score, corr_score, flow_score])
+    score = np.dot(weights, factors) * 100
+
+    return score, current_vol
+
+def get_strategy(score, vol):
+    if score > 60 and vol < 0.2:
+        return "Long Calls / Bull Spread"
+    elif score > 60:
+        return "Short Puts"
+    elif score < -60:
+        return "Long Puts / Bear Spread"
+    else:
+        return "Iron Condor"
 
 # =========================
-# CHART (FIXED SCALE)
+# MAIN LOOP
+# =========================
+results = []
+
+for t in tickers:
+    data = load_data(t.strip())
+
+    if data.empty:
+        continue
+
+    score, vol = calc_scores(data)
+
+    strategy = get_strategy(score, vol)
+
+    results.append({
+        "Ticker": t,
+        "Score": round(score,2),
+        "Vol": round(vol*100,2),
+        "Strategy": strategy
+    })
+
+df = pd.DataFrame(results)
+
+# =========================
+# DASHBOARD
+# =========================
+st.subheader("📊 Signal Board")
+st.dataframe(df)
+
+# =========================
+# BEST TRADE
+# =========================
+if not df.empty:
+    best = df.sort_values("Score", ascending=False).iloc[0]
+
+    st.subheader("🏆 Best Trade")
+
+    st.write(best)
+
+# =========================
+# PORTFOLIO ALLOCATION
+# =========================
+st.subheader("💼 Portfolio Allocation")
+
+if not df.empty:
+    df["Weight"] = df["Score"].clip(lower=0)
+    df["Weight"] = df["Weight"] / df["Weight"].sum()
+
+    df["Capital (€)"] = df["Weight"] * capital
+
+    st.dataframe(df)
+
+# =========================
+# CHART
 # =========================
 st.subheader("📈 Chart")
 
-fig = go.Figure()
+ticker_chart = st.selectbox("Chart auswählen", df["Ticker"] if not df.empty else [])
 
-fig.add_trace(go.Candlestick(
-    x=data.index,
-    open=data['Open'],
-    high=data['High'],
-    low=data['Low'],
-    close=data['Close']
-))
+if ticker_chart:
+    data = load_data(ticker_chart)
 
-# Auto-scale fix (kein 0 mehr)
-min_price = data["Low"].min()
-max_price = data["High"].max()
+    fig = go.Figure()
 
-fig.update_layout(
-    yaxis=dict(range=[min_price * 0.98, max_price * 1.02]),
-    height=500
-)
+    fig.add_trace(go.Candlestick(
+        x=data.index,
+        open=data['Open'],
+        high=data['High'],
+        low=data['Low'],
+        close=data['Close']
+    ))
 
-st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True)
 
 # =========================
-# SIGNAL ENGINE
+# OPTIONS ENGINE
 # =========================
-st.subheader("📊 Signal")
+st.subheader("📊 Options Engine")
 
-if regime == "Risk On":
-    st.success("➡️ Risk-On Strategien")
-    st.write("- Long Calls")
-    st.write("- Trend Following")
-    st.write("- Momentum")
-else:
-    st.error("➡️ Risk-Off Strategien")
-    st.write("- Long Puts")
-    st.write("- Hedging")
-    st.write("- Cash / Defensive")
+if ticker_chart:
+    S = data["Close"].iloc[-1]
+    K = st.number_input("Strike", value=float(round(S)))
+    T = st.slider("Laufzeit", 0.1, 2.0, 0.5)
+    r = 0.02
+    sigma = 0.2
 
-# =========================
-# OPTIONS ENGINE (LEVEL 3)
-# =========================
-st.subheader("🧮 Options Engine")
+    def bs_call(S,K,T,r,sigma):
+        d1=(np.log(S/K)+(r+sigma**2/2)*T)/(sigma*np.sqrt(T))
+        d2=d1-sigma*np.sqrt(T)
+        return S*norm.cdf(d1)-K*np.exp(-r*T)*norm.cdf(d2)
 
-S = float(data["Close"].iloc[-1])  # aktueller Preis
-K = st.number_input("Strike", value=round(S, 0))
-T = st.slider("Laufzeit (Jahre)", 0.01, 2.0, 0.5)
-r = 0.01
-sigma = current_vol * np.sqrt(252)
+    def bs_put(S,K,T,r,sigma):
+        d1=(np.log(S/K)+(r+sigma**2/2)*T)/(sigma*np.sqrt(T))
+        d2=d1-sigma*np.sqrt(T)
+        return K*np.exp(-r*T)*norm.cdf(-d2)-S*norm.cdf(-d1)
 
-def black_scholes_call(S, K, T, r, sigma):
-    if sigma == 0 or T == 0:
-        return 0
-    d1 = (np.log(S / K) + (r + 0.5 * sigma**2)*T) / (sigma * np.sqrt(T))
-    d2 = d1 - sigma * np.sqrt(T)
-    return S * norm.cdf(d1) - K * np.exp(-r*T) * norm.cdf(d2)
-
-def black_scholes_put(S, K, T, r, sigma):
-    if sigma == 0 or T == 0:
-        return 0
-    d1 = (np.log(S / K) + (r + 0.5 * sigma**2)*T) / (sigma * np.sqrt(T))
-    d2 = d1 - sigma * np.sqrt(T)
-    return K * np.exp(-r*T) * norm.cdf(-d2) - S * norm.cdf(-d1)
-
-call_price = black_scholes_call(S, K, T, r, sigma)
-put_price = black_scholes_put(S, K, T, r, sigma)
-
-col1, col2 = st.columns(2)
-col1.metric("Call Preis", f"{call_price:.2f}")
-col2.metric("Put Preis", f"{put_price:.2f}")
-
-# =========================
-# LEVEL 4 – AI SIGNAL SCORE
-# =========================
-st.subheader("🤖 AI Score")
-
-momentum = data["Close"].pct_change(20).iloc[-1]
-vol_score = 1 if current_vol < avg_vol else -1
-trend_score = 1 if data["Close"].iloc[-1] > data["Close"].rolling(50).mean().iloc[-1] else -1
-
-score = momentum * 5 + vol_score * 2 + trend_score * 3
-
-if score > 3:
-    st.success(f"BULLISH ({score:.2f})")
-elif score < -3:
-    st.error(f"BEARISH ({score:.2f})")
-else:
-    st.warning(f"NEUTRAL ({score:.2f})")
-
-# =========================
-# RAW DATA
-# =========================
-with st.expander("📋 Rohdaten anzeigen"):
-    st.dataframe(data.tail())
+    st.write("Call:", round(bs_call(S,K,T,r,sigma),2))
+    st.write("Put:", round(bs_put(S,K,T,r,sigma),2))
