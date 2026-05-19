@@ -1,247 +1,151 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
-import yfinance as yf
+# app.py
 
-st.set_page_config(layout="wide")
+from fastapi import FastAPI, WebSocket
+import asyncio
+import random
+from datetime import datetime
 
-# ==============================
-# ASSET UNIVERSE
-# ==============================
-
-ASSETS = [
-    "AAPL","MSFT","NVDA","AMZN","GOOGL",
-    "META","TSLA","NFLX",
-    "SPY","QQQ",
-    "GLD","SLV","USO",
-    "EURUSD=X","GBPUSD=X",
-    "BTC-USD","ETH-USD"
-]
+app = FastAPI()
 
 # ==============================
-# DATA
+# CONFIG
 # ==============================
 
-@st.cache_data
-def load_data(symbol):
-    df = yf.download(symbol, period="2y", interval="1d")
-
-    if df is None or df.empty:
-        return None
-
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-
-    return df.dropna()
+CONFIDENCE_THRESHOLD = 0.75
+MAX_DAILY_LOSS = -5000
 
 # ==============================
-# FEATURES
+# STATE
 # ==============================
 
-def create_features(df):
+clients = []
 
-    df = df.copy()
+portfolio = {
+    "cash": 100000,
+    "positions": [],
+    "pnl": 0
+}
 
-    if isinstance(df["Close"], pd.DataFrame):
-        df["Close"] = df["Close"].iloc[:, 0]
-
-    df["returns"] = df["Close"].pct_change()
-    df["ma50"] = df["Close"].rolling(50).mean()
-    df["momentum"] = df["Close"] - df["Close"].shift(10)
-    df["volatility"] = df["returns"].rolling(20).std()
-    df["trend"] = df["Close"] - df["ma50"]
-
-    return df.dropna()
+trade_log_file = "trades.log"
 
 # ==============================
-# SIGNAL SCORE
+# UTILS
 # ==============================
 
-def generate_score(df):
-
-    row = df.iloc[-1]
-    score = 0
-
-    if row["momentum"] > 0:
-        score += 1
-    if row["trend"] > 0:
-        score += 1
-    if row["volatility"] < df["volatility"].mean():
-        score += 1
-
-    return score
-
-# ==============================
-# SCANNER
-# ==============================
-
-def scan_markets():
-
-    results = []
-
-    for asset in ASSETS:
-
-        df = load_data(asset)
-        if df is None:
-            continue
-
-        df = create_features(df)
-        if len(df) < 200:
-            continue
-
-        score = generate_score(df)
-
-        results.append({
-            "Asset": asset,
-            "Score": score,
-            "Price": round(df["Close"].iloc[-1], 2)
-        })
-
-    return pd.DataFrame(results)
-
-# ==============================
-# BACKTEST
-# ==============================
-
-def simulate_trade(df, i, rr=2, sl=0.01):
-
-    entry = df["Close"].iloc[i]
-    tp = entry * (1 + rr * sl)
-    stop = entry * (1 - sl)
-
-    for j in range(i+1, len(df)):
-        if df["Low"].iloc[j] <= stop:
-            return -1
-        if df["High"].iloc[j] >= tp:
-            return rr
-
-    return 0
-
-
-def backtest(df):
-
-    results = []
-
-    for i in range(200, len(df)-10):
-
-        sub = df.iloc[:i]
-
-        if generate_score(sub) >= 2:
-            results.append(simulate_trade(df, i))
-
-    return results
-
-
-def evaluate(results):
-
-    if not results:
-        return {"Winrate":0,"EV":0,"Trades":0}
-
-    wins = [r for r in results if r > 0]
-    losses = [r for r in results if r < 0]
-
-    winrate = len(wins)/len(results)
-    ev = winrate*np.mean(wins) - (1-winrate)*abs(np.mean(losses))
-
-    return {
-        "Winrate": round(winrate,2),
-        "EV": round(ev,2),
-        "Trades": len(results)
+def log_trade(signal, pnl):
+    entry = {
+        "time": str(datetime.now()),
+        "symbol": signal["symbol"],
+        "action": signal["action"],
+        "confidence": signal["confidence"],
+        "pnl": pnl
     }
 
-# ==============================
-# UI
-# ==============================
+    with open(trade_log_file, "a") as f:
+        f.write(str(entry) + "\n")
 
-st.title("🤖 AI Hedge Fund – PRO SCANNER")
 
-tab1, tab2, tab3, tab4 = st.tabs([
-    "📊 Backtest",
-    "🔎 Scanner",
-    "🏆 Top Trades",
-    "💼 Portfolio"
-])
+def kill_switch():
+    return portfolio["pnl"] > MAX_DAILY_LOSS
 
-# ==============================
-# TAB 1 BACKTEST
-# ==============================
 
-with tab1:
+def execute_trade(signal):
 
-    if st.button("Run Backtest"):
+    position = {
+        "symbol": signal["symbol"],
+        "entry": random.uniform(90, 110),
+        "size": 1
+    }
 
-        data = []
+    portfolio["positions"].append(position)
 
-        for asset in ASSETS:
-            df = load_data(asset)
-            if df is None:
-                continue
+    return position
 
-            df = create_features(df)
-            if len(df) < 300:
-                continue
 
-            stats = evaluate(backtest(df))
+def update_pnl():
 
-            stats["Asset"] = asset
-            data.append(stats)
+    total = 0
 
-        st.dataframe(pd.DataFrame(data))
+    for pos in portfolio["positions"]:
+        current_price = random.uniform(90, 110)
+        pnl = (current_price - pos["entry"]) * pos["size"]
+        total += pnl
+
+    portfolio["pnl"] = total
+    return total
 
 
 # ==============================
-# TAB 2 SCANNER
+# AI SIGNAL GENERATOR (placeholder)
 # ==============================
 
-with tab2:
+def generate_signal():
 
-    if st.button("Scan Markets"):
-
-        df = scan_markets()
-        st.dataframe(df.sort_values("Score", ascending=False))
-
-
-# ==============================
-# TAB 3 TOP TRADES
-# ==============================
-
-with tab3:
-
-    if st.button("Get Top Trades"):
-
-        df = scan_markets()
-
-        top = df.sort_values("Score", ascending=False).head(5)
-
-        for _, row in top.iterrows():
-            st.subheader(row["Asset"])
-            st.write("Score:", row["Score"])
-            st.write("Price:", row["Price"])
-            st.markdown("---")
+    return {
+        "symbol": random.choice(["AAPL", "TSLA", "BTC", "NVDA"]),
+        "action": random.choice(["BUY", "SELL"]),
+        "confidence": round(random.uniform(0.6, 0.95), 2),
+        "explain": {
+            "lstm": random.choice(["bullish", "bearish"]),
+            "transformer": "trend",
+            "macro": random.choice(["risk-on", "risk-off"]),
+            "orderbook": random.choice(["buy pressure", "sell pressure"])
+        }
+    }
 
 
 # ==============================
-# TAB 4 PORTFOLIO
+# MAIN WEBSOCKET
 # ==============================
 
-with tab4:
+@app.websocket("/ws")
+async def websocket_endpoint(ws: WebSocket):
 
-    if st.button("Build Portfolio"):
+    await ws.accept()
+    clients.append(ws)
 
-        df = scan_markets()
+    try:
+        while True:
 
-        top = df.sort_values("Score", ascending=False).head(5)
+            # Kill Switch Check
+            if not kill_switch():
+                await ws.send_json({"error": "KILL SWITCH ACTIVATED"})
+                break
 
-        capital = 10000
-        allocation = capital / len(top)
+            signal = generate_signal()
 
-        portfolio = []
+            executed = False
+            trade_result = None
 
-        for _, row in top.iterrows():
-            portfolio.append({
-                "Asset": row["Asset"],
-                "Allocation ($)": round(allocation,2),
-                "Score": row["Score"]
-            })
+            # ==============================
+            # 🔥 CONFIDENCE FILTER
+            # ==============================
 
-        st.dataframe(pd.DataFrame(portfolio))
+            if signal["confidence"] >= CONFIDENCE_THRESHOLD:
+                trade = execute_trade(signal)
+                executed = True
+                trade_result = trade
+
+            # Update PnL
+            pnl = update_pnl()
+
+            # Log Trade (nur wenn ausgeführt)
+            if executed:
+                log_trade(signal, pnl)
+
+            # Send to frontend
+            data = {
+                "portfolio": portfolio["cash"] + pnl,
+                "pnl": pnl,
+                "signal": signal,
+                "executed": executed,
+                "positions": len(portfolio["positions"])
+            }
+
+            await ws.send_json(data)
+
+            await asyncio.sleep(1)
+
+    except Exception as e:
+        print("Connection closed:", e)
+        clients.remove(ws)
